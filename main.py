@@ -56,22 +56,38 @@ async def schedule_reminder(remind_time, rift_time, delta):
             "🎯 Focus up! It’s Rift time soon!"
         ]
         messages = [
-            f"<@&{ROLE_ID}> ⚔️ **UMBRAL RIFT APPROACHES!**\n"
-            f"⏰ Starts in **{int(delta/60)} minutes**\n"
+            f"<@&{ROLE_ID}> 🌀 **Brace yourselves!**\n"
+            f"⏰ Rift begins in **{int(delta/60)} minutes**\n"
             f"🕒 <t:{int(rift_time.timestamp())}:R> | <t:{int(rift_time.timestamp())}:t> UTC\n"
-            f"{random.choice(motivational)}",
-
-            f"<@&{ROLE_ID}> 🚨 Rift opens in **{int(delta/60)} minutes**!\n"
+            f"🔥 Let’s crush this Rift together!",
+        
+            f"<@&{ROLE_ID}> ⚔️ **Prepare for battle!**\n"
+            f"🕰️ Only **{int(delta/60)} minutes** to go!\n"
             f"📆 <t:{int(rift_time.timestamp())}:F>\n"
-            f"🕰️ Countdown: <t:{int(rift_time.timestamp())}:R>\n"
-            f"{random.choice(motivational)}",
-
-            f"<@&{ROLE_ID}> 🌌 **Brace yourselves!**\n"
-            f"🌪️ Rift begins in **{int(delta/60)} minutes**!\n"
-            f"⏳ <t:{int(rift_time.timestamp())}:R> — prepare for war.\n"
-            f"{random.choice(motivational)}"
+            f"🚀 Push your limits. This is our moment!",
+        
+            f"<@&{ROLE_ID}> 🛡️ **Incoming Rift alert!**\n"
+            f"💣 Rift starts in **{int(delta/60)} minutes**\n"
+            f"⏳ <t:{int(rift_time.timestamp())}:R>\n"
+            f"🌟 Every Rift is a chance to shine. Let’s go!",
+        
+            f"<@&{ROLE_ID}> ⚡ **War horns sound!**\n"
+            f"📢 The Rift erupts in **{int(delta/60)} minutes**!\n"
+            f"🕒 <t:{int(rift_time.timestamp())}:R> (UTC)\n"
+            f"🎯 Focus up! It’s Rift time soon!",
+        
+            f"<@&{ROLE_ID}> 🎇 **Get ready, warriors!**\n"
+            f"⏰ In just **{int(delta/60)} minutes**, it begins.\n"
+            f"🕰️ <t:{int(rift_time.timestamp())}:R> | <t:{int(rift_time.timestamp())}:t> UTC\n"
+            f"🏆 Together we conquer — don’t miss it!",
+        
+            f"<@&{ROLE_ID}> 🔥 **Final countdown!**\n"
+            f"⏳ Rift in **{int(delta/60)} minutes**.\n"
+            f"📅 <t:{int(rift_time.timestamp())}:F> — mark it!\n"
+            f"💥 Be legendary — show up and fight!"
         ]
-        await channel.send(random.choice(messages))
+        style_index = hash(rift_time.isoformat()) % len(messages)
+        await channel.send(messages[style_index])
 
 @tree.command(name="nextrift", description="Show the next Rift event")
 async def nextrift(interaction: discord.Interaction):
