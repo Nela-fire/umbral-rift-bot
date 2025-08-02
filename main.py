@@ -86,7 +86,7 @@ async def schedule_reminder(remind_time, rift_time, delta):
             f"📅 <t:{int(rift_time.timestamp())}:F> — mark it!\n"
             f"💥 Be legendary — show up and fight!"
         ]
-        style_index = hash(rift_time.isoformat()) % len(messages)
+        style_index = hash((rift_time.isoformat(), delta)) % len(messages)
         await channel.send(messages[style_index])
 
 @tree.command(name="nextrift", description="Show the next Rift event")
