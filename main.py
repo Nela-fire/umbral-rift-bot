@@ -4,6 +4,7 @@ import datetime
 import pytz
 import os
 import random
+import json
 from discord import app_commands
 from discord.ext import commands
 from icalendar import Calendar
@@ -15,31 +16,64 @@ ROLE_ID = int(os.getenv("DISCORD_ROLE_ID") or 0)
 R5_ROLE_ID = 1380924100742217748
 R4_ROLE_ID = 1380924200985956353
 
+def load_rifts():
+    if os.path.exists("rifts.json"):
+        with open("rifts.json", "r") as f:
+            return json.load(f)
+    else:
+        # Domyślna lista riftów, jeśli plik nie istnieje
+        return [
+            "2025-07-30 08:00",
+            "2025-08-01 20:00", "2025-08-03 08:00", "2025-08-05 20:00", "2025-08-07 08:00",
+            "2025-08-09 20:00", "2025-08-11 08:00", "2025-08-13 08:00", "2025-08-15 08:00",
+            "2025-08-17 20:00", "2025-08-19 08:00", "2025-08-21 20:00", "2025-08-23 08:00",
+            "2025-08-25 20:00", "2025-08-27 08:00", "2025-08-29 20:00", "2025-08-31 08:00"
+        ]
+
+def save_rifts():
+    with open("rifts.json", "w") as f:
+        json.dump(rifts, f, indent=4)
+
 intents = discord.Intents.default()
 intents.message_content = True
 client = commands.Bot(command_prefix="/", intents=intents)
 tree = client.tree
 
-rifts = [
-    "2025-07-30 08:00",
-    "2025-08-01 20:00", "2025-08-03 08:00", "2025-08-05 20:00", "2025-08-07 08:00",
-    "2025-08-09 20:00", "2025-08-11 08:00", "2025-08-13 20:00", "2025-08-15 08:00",
-    "2025-08-17 20:00", "2025-08-19 08:00", "2025-08-21 20:00", "2025-08-23 08:00",
-    "2025-08-25 20:00", "2025-08-27 08:00", "2025-08-29 20:00", "2025-08-31 08:00"
-]
+rifts = load_rifts()
+scheduled_tasks = {}
+
+async def schedule_single_rift(rift_time, deltas):
+    now = datetime.datetime.now(pytz.utc)
+    for delta in deltas:
+        remind_time = rift_time - datetime.timedelta(seconds=delta)
+        if remind_time > now:
+            await discord.utils.sleep_until(remind_time)
+            await send_rift_reminder(rift_time, delta)
+
+async def send_rift_reminder(rift_time, delta):
+    channel = await client.fetch_channel(int(CHANNEL_ID))
+    if channel:
+        await channel.send(
+            f"<@&{ROLE_ID}> Rift in **{int(delta/60)} minutes** "
+            f"(<t:{int(rift_time.timestamp())}:R>)"
+        )
 
 @client.event
 async def on_ready():
     print(f"Bot is online as {client.user}")
+    scheduled_tasks.clear()  # czyścimy stare taski na start
     await tree.sync()
     now = datetime.datetime.now(pytz.utc)
+
     for rift_time_str in rifts:
         rift_time = datetime.datetime.strptime(rift_time_str, "%Y-%m-%d %H:%M")
         rift_time = pytz.utc.localize(rift_time)
+
         for delta in [3600, 1800, 900, 300]:
             remind_time = rift_time - datetime.timedelta(seconds=delta)
             if remind_time > now:
-                asyncio.create_task(schedule_reminder(remind_time, rift_time, delta))
+                task = asyncio.create_task(schedule_reminder(remind_time, rift_time, delta))
+                scheduled_tasks.setdefault(rift_time_str, []).append(task)
 
 async def schedule_reminder(remind_time, rift_time, delta):
     await discord.utils.sleep_until(remind_time)
@@ -88,6 +122,13 @@ async def schedule_reminder(remind_time, rift_time, delta):
         ]
         style_index = hash((rift_time.isoformat(), delta)) % len(messages)
         await channel.send(messages[style_index])
+        rift_str = rift_time.strftime("%Y-%m-%d %H:%M")
+        tasks = scheduled_tasks.get(rift_str, [])
+        current_task = asyncio.current_task()
+        if current_task in tasks:
+            tasks.remove(current_task)
+        if not tasks:
+            scheduled_tasks.pop(rift_str, None)
 
 @tree.command(name="nextrift", description="Show the next Rift event")
 async def nextrift(interaction: discord.Interaction):
@@ -194,6 +235,7 @@ async def uploadics(interaction: discord.Interaction, attachment: discord.Attach
             rifts_set = set(rifts)
             rifts_set.update(new_rifts)
             rifts = sorted(rifts_set)
+            save_rifts()
 
             await interaction.response.send_message(
                 f"✅ Rift schedule updated. Added {len(rifts) - old_count} new events (now total {len(rifts)}).",
@@ -229,17 +271,25 @@ async def delay_next_rift(interaction: discord.Interaction, minutes: int):
     for i, rift_time_str in enumerate(rifts):
         rift_time = pytz.utc.localize(datetime.datetime.strptime(rift_time_str, "%Y-%m-%d %H:%M"))
         if rift_time > now:
-            new_time = rift_time + datetime.timedelta(minutes=minutes)
-            rifts[i] = new_time.strftime("%Y-%m-%d %H:%M")
+            old_rift_str = rift_time_str
+            
+            if old_rift_str in scheduled_tasks:
+                for task in scheduled_tasks[old_rift_str]:
+                    task.cancel()
+                scheduled_tasks.pop(old_rift_str, None)
 
-            notify_channel = await client.fetch_channel(1398208622567227462)
-            if notify_channel:
-                await notify_channel.send(
-                    f"🔧 **Rift manually adjusted!**\n"
-                    f"<@&{R5_ROLE_ID}> <@&{R4_ROLE_ID}>\n"
-                    f"⏰ New time: <t:{int(new_time.timestamp())}:F> | <t:{int(new_time.timestamp())}:R>\n"
-                    f"➕ Adjustment: **{minutes:+} minutes**"
-                )
+            new_time = rift_time + datetime.timedelta(minutes=minutes)
+            new_rift_str = new_time.strftime("%Y-%m-%d %H:%M")
+            rifts[i] = new_rift_str
+            save_rifts()
+
+            tasks = []
+            for delta in [3600, 1800, 900, 300]:
+                remind_time = new_time - datetime.timedelta(seconds=delta)
+                if remind_time > now:
+                    t = asyncio.create_task(schedule_reminder(remind_time, new_time, delta))
+                    tasks.append(t)
+            scheduled_tasks[new_rift_str] = tasks
 
             await interaction.response.send_message(
                 f"✅ Rift moved to <t:{int(new_time.timestamp())}:F> ({minutes:+} min)",
@@ -247,7 +297,7 @@ async def delay_next_rift(interaction: discord.Interaction, minutes: int):
             )
             return
 
-    await interaction.response.send_message("No upcoming Rift found to modify.", ephemeral=True)
+    await interaction.response.send_message("No upcoming Rift found.", ephemeral=True)
 
 @delay_next_rift.error
 async def delay_next_rift_error(interaction: discord.Interaction, error):
