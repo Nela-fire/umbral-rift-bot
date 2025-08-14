@@ -10,6 +10,8 @@ from discord import app_commands
 from discord.ext import commands
 from icalendar import Calendar
 from keep_alive import keep_alive
+from discord.app_commands import BucketType
+from discord.app_commands.checks import cooldown as slash_cooldown
 
 # --- ENV / stałe ---
 TOKEN = str(os.getenv("DISCORD_BOT_TOKEN") or "")
@@ -186,7 +188,6 @@ async def on_ready():
             print(f"[schedule_all_rifts] error: {e}")
 
 # --- komendy (z cooldownami i respond_safe) ---
-from discord.app_commands import cooldown, BucketType
 
 @tree.command(name="nextrift", description="Show the next Rift event")
 @cooldown(1, 3, key=BucketType.user)
