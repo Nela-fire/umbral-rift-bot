@@ -1,27 +1,29 @@
-import discord
+# main.py
+import os
+import json
+import pytz
+import random
 import asyncio
 import datetime
-import pytz
-import os
-import random
-import json
+import discord
 from discord import app_commands
 from discord.ext import commands
 from icalendar import Calendar
 from keep_alive import keep_alive
 
+# --- ENV / stałe ---
 TOKEN = str(os.getenv("DISCORD_BOT_TOKEN") or "")
 CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID") or 0)
 ROLE_ID = int(os.getenv("DISCORD_ROLE_ID") or 0)
 R5_ROLE_ID = 1380924100742217748
 R4_ROLE_ID = 1380924200985956353
 
+# --- rifts load/save ---
 def load_rifts():
     if os.path.exists("rifts.json"):
         with open("rifts.json", "r") as f:
             return json.load(f)
     else:
-        # Domyślna lista riftów, jeśli plik nie istnieje
         return [
             "2025-07-30 08:00",
             "2025-08-01 20:00", "2025-08-03 08:00", "2025-08-05 20:00", "2025-08-07 08:00",
@@ -34,157 +36,222 @@ def save_rifts():
     with open("rifts.json", "w") as f:
         json.dump(rifts, f, indent=4)
 
+# --- discord client ---
 intents = discord.Intents.default()
 intents.message_content = True
 client = commands.Bot(command_prefix="/", intents=intents)
 tree = client.tree
 
 rifts = load_rifts()
-scheduled_tasks = {}
+scheduled_tasks: dict[str, list[asyncio.Task]] = {}
 
-async def schedule_single_rift(rift_time, deltas):
+# --- pomocnicze ---
+def utc_parse(s: str) -> datetime.datetime:
+    return pytz.utc.localize(datetime.datetime.strptime(s, "%Y-%m-%d %H:%M"))
+
+def ts(dt: datetime.datetime) -> int:
+    return int(dt.timestamp())
+
+# --- cache kanałów, kolejka wysyłek, guard on_ready ---
+_channel_cache: dict[int, discord.TextChannel] = {}
+SEND_Q: asyncio.Queue = asyncio.Queue()
+_started = False  # żeby nie dublować harmonogramu po reconnect
+
+async def get_text_channel(ch_id: int) -> discord.TextChannel | None:
+    if ch_id in _channel_cache:
+        return _channel_cache[ch_id]
+    ch = client.get_channel(ch_id)
+    if isinstance(ch, discord.TextChannel):
+        _channel_cache[ch_id] = ch
+        return ch
+    try:
+        ch = await client.fetch_channel(ch_id)
+        if isinstance(ch, discord.TextChannel):
+            _channel_cache[ch_id] = ch
+            return ch
+    except Exception:
+        return None
+    return None
+
+async def sender_loop():
+    """Wysyłki przez kolejkę (~4 req/s) + retry po 429."""
+    while True:
+        func, args, kwargs = await SEND_Q.get()
+        try:
+            await func(*args, **kwargs)
+        except discord.HTTPException as e:
+            if getattr(e, "status", None) == 429:
+                await asyncio.sleep(5)
+                try:
+                    await func(*args, **kwargs)
+                except Exception:
+                    pass
+        await asyncio.sleep(0.25)  # ~4/s
+
+async def send_safe_message(channel: discord.abc.Messageable, *args, **kwargs):
+    await SEND_Q.put((channel.send, args, kwargs))
+
+async def respond_safe(interaction: discord.Interaction, content=None, *, embed=None, ephemeral=True):
+    """Bezpieczna odpowiedź slash: defer + followup przez kolejkę (redukuje 429)."""
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=ephemeral)
+        async def _send_followup():
+            await interaction.followup.send(content=content, embed=embed, ephemeral=ephemeral)
+        await SEND_Q.put((_send_followup, tuple(), {}))
+    except discord.HTTPException:
+        pass
+
+# --- schedulery riftów ---
+async def schedule_reminder(remind_time: datetime.datetime, rift_time: datetime.datetime, delta: int):
+    await discord.utils.sleep_until(remind_time)
+    channel = await get_text_channel(CHANNEL_ID)
+    if not channel:
+        return
+
+    motivational = [
+        "🔥 Let’s crush this Rift together!",
+        "⚔️ Gear up, team — victory awaits!",
+        "🚀 Push your limits. This is our moment!",
+        "💥 Be legendary — show up and fight!",
+        "🌟 Every Rift is a chance to shine. Let’s go!",
+        "🏆 Together we conquer — don’t miss it!",
+        "🛡️ This is what we trained for!",
+        "🎯 Focus up! It’s Rift time soon!",
+    ]
+    templates = [
+        (
+            f"<@&{ROLE_ID}> 🌀 **Brace yourselves!**\n"
+            f"⏰ Rift begins in **{int(delta/60)} minutes**\n"
+            f"🕒 <t:{ts(rift_time)}:R> | <t:{ts(rift_time)}:t> UTC\n"
+            f"{random.choice(motivational)}"
+        ),
+        (
+            f"<@&{ROLE_ID}> ⚔️ **Prepare for battle!**\n"
+            f"🕰️ Only **{int(delta/60)} minutes** to go!\n"
+            f"📆 <t:{ts(rift_time)}:F>\n"
+            f"{random.choice(motivational)}"
+        ),
+        (
+            f"<@&{ROLE_ID}> 🛡️ **Incoming Rift alert!**\n"
+            f"💣 Rift starts in **{int(delta/60)} minutes**\n"
+            f"⏳ <t:{ts(rift_time)}:R>\n"
+            f"{random.choice(motivational)}"
+        ),
+        (
+            f"<@&{ROLE_ID}> ⚡ **War horns sound!**\n"
+            f"📢 The Rift erupts in **{int(delta/60)} minutes**!\n"
+            f"🕒 <t:{ts(rift_time)}:R> (UTC)\n"
+            f"{random.choice(motivational)}"
+        ),
+    ]
+    style_index = (ts(rift_time) + delta) % len(templates)
+    await send_safe_message(channel, templates[style_index])
+
+    # sprzątanie tasków
+    rift_str = rift_time.strftime("%Y-%m-%d %H:%M")
+    tasks = scheduled_tasks.get(rift_str, [])
+    current_task = asyncio.current_task()
+    if current_task in tasks:
+        tasks.remove(current_task)
+    if not tasks:
+        scheduled_tasks.pop(rift_str, None)
+
+async def schedule_all_rifts():
+    scheduled_tasks.clear()
     now = datetime.datetime.now(pytz.utc)
-    for delta in deltas:
-        remind_time = rift_time - datetime.timedelta(seconds=delta)
-        if remind_time > now:
-            await discord.utils.sleep_until(remind_time)
-            await send_rift_reminder(rift_time, delta)
-
-async def send_rift_reminder(rift_time, delta):
-    channel = await client.fetch_channel(int(CHANNEL_ID))
-    if channel:
-        await channel.send(
-            f"<@&{ROLE_ID}> Rift in **{int(delta/60)} minutes** "
-            f"(<t:{int(rift_time.timestamp())}:R>)"
-        )
-
-@client.event
-async def on_ready():
-    print(f"Bot is online as {client.user}")
-    scheduled_tasks.clear()  # czyścimy stare taski na start
-    await tree.sync()
-    now = datetime.datetime.now(pytz.utc)
-
     for rift_time_str in rifts:
-        rift_time = datetime.datetime.strptime(rift_time_str, "%Y-%m-%d %H:%M")
-        rift_time = pytz.utc.localize(rift_time)
-
+        rift_time = utc_parse(rift_time_str)
         for delta in [3600, 1800, 900, 300]:
             remind_time = rift_time - datetime.timedelta(seconds=delta)
             if remind_time > now:
-                task = asyncio.create_task(schedule_reminder(remind_time, rift_time, delta))
-                scheduled_tasks.setdefault(rift_time_str, []).append(task)
+                t = asyncio.create_task(schedule_reminder(remind_time, rift_time, delta))
+                scheduled_tasks.setdefault(rift_time_str, []).append(t)
 
-async def schedule_reminder(remind_time, rift_time, delta):
-    await discord.utils.sleep_until(remind_time)
-    channel = await client.fetch_channel(int(CHANNEL_ID))
-    if channel:
-        motivational = [
-            "🔥 Let’s crush this Rift together!",
-            "⚔️ Gear up, team — victory awaits!",
-            "🚀 Push your limits. This is our moment!",
-            "💥 Be legendary — show up and fight!",
-            "🌟 Every Rift is a chance to shine. Let’s go!",
-            "🏆 Together we conquer — don’t miss it!",
-            "🛡️ This is what we trained for!", 
-            "🎯 Focus up! It’s Rift time soon!"
-        ]
-        messages = [
-            f"<@&{ROLE_ID}> 🌀 **Brace yourselves!**\n"
-            f"⏰ Rift begins in **{int(delta/60)} minutes**\n"
-            f"🕒 <t:{int(rift_time.timestamp())}:R> | <t:{int(rift_time.timestamp())}:t> UTC\n"
-            f"🔥 Let’s crush this Rift together!",
-        
-            f"<@&{ROLE_ID}> ⚔️ **Prepare for battle!**\n"
-            f"🕰️ Only **{int(delta/60)} minutes** to go!\n"
-            f"📆 <t:{int(rift_time.timestamp())}:F>\n"
-            f"🚀 Push your limits. This is our moment!",
-        
-            f"<@&{ROLE_ID}> 🛡️ **Incoming Rift alert!**\n"
-            f"💣 Rift starts in **{int(delta/60)} minutes**\n"
-            f"⏳ <t:{int(rift_time.timestamp())}:R>\n"
-            f"🌟 Every Rift is a chance to shine. Let’s go!",
-        
-            f"<@&{ROLE_ID}> ⚡ **War horns sound!**\n"
-            f"📢 The Rift erupts in **{int(delta/60)} minutes**!\n"
-            f"🕒 <t:{int(rift_time.timestamp())}:R> (UTC)\n"
-            f"🎯 Focus up! It’s Rift time soon!",
-        
-            f"<@&{ROLE_ID}> 🎇 **Get ready, warriors!**\n"
-            f"⏰ In just **{int(delta/60)} minutes**, it begins.\n"
-            f"🕰️ <t:{int(rift_time.timestamp())}:R> | <t:{int(rift_time.timestamp())}:t> UTC\n"
-            f"🏆 Together we conquer — don’t miss it!",
-        
-            f"<@&{ROLE_ID}> 🔥 **Final countdown!**\n"
-            f"⏳ Rift in **{int(delta/60)} minutes**.\n"
-            f"📅 <t:{int(rift_time.timestamp())}:F> — mark it!\n"
-            f"💥 Be legendary — show up and fight!"
-        ]
-        style_index = hash((rift_time.isoformat(), delta)) % len(messages)
-        await channel.send(messages[style_index])
-        rift_str = rift_time.strftime("%Y-%m-%d %H:%M")
-        tasks = scheduled_tasks.get(rift_str, [])
-        current_task = asyncio.current_task()
-        if current_task in tasks:
-            tasks.remove(current_task)
-        if not tasks:
-            scheduled_tasks.pop(rift_str, None)
+# --- events ---
+@client.event
+async def on_ready():
+    global _started
+    print(f"✅ Bot is online as {client.user}")
+    if not _started:
+        _started = True
+        client.loop.create_task(sender_loop())
+        try:
+            await tree.sync()  # raz, nie przy każdym reconnect
+        except Exception:
+            pass
+        try:
+            await schedule_all_rifts()
+        except Exception as e:
+            print(f"[schedule_all_rifts] error: {e}")
+
+# --- komendy (z cooldownami i respond_safe) ---
+from discord.app_commands import cooldown, BucketType
 
 @tree.command(name="nextrift", description="Show the next Rift event")
+@cooldown(1, 3, key=BucketType.user)
 async def nextrift(interaction: discord.Interaction):
     now = datetime.datetime.now(pytz.utc)
     for rift_time_str in rifts:
-        rift_time = pytz.utc.localize(datetime.datetime.strptime(rift_time_str, "%Y-%m-%d %H:%M"))
+        rift_time = utc_parse(rift_time_str)
         if rift_time > now:
-            await interaction.response.send_message(
-                f"🌀 The next Rift is <t:{int(rift_time.timestamp())}:F>\n"
-                f"⏳ <t:{int(rift_time.timestamp())}:R>", ephemeral=True)
+            await respond_safe(
+                interaction,
+                f"🌀 The next Rift is <t:{ts(rift_time)}:F>\n⏳ <t:{ts(rift_time)}:R>",
+                ephemeral=True
+            )
             return
-    await interaction.response.send_message("No upcoming Rift found.", ephemeral=True)
+    await respond_safe(interaction, "No upcoming Rift found.", ephemeral=True)
 
 @tree.command(name="weeklyrifts", description="Show all Rifts in the next 7 days")
+@cooldown(1, 5, key=BucketType.user)
 async def weeklyrifts(interaction: discord.Interaction):
     now = datetime.datetime.now(pytz.utc)
     one_week = now + datetime.timedelta(days=7)
     upcoming = []
     for rift_time_str in rifts:
-        rift_time = pytz.utc.localize(datetime.datetime.strptime(rift_time_str, "%Y-%m-%d %H:%M"))
+        rift_time = utc_parse(rift_time_str)
         if now <= rift_time <= one_week:
-            upcoming.append(f"<t:{int(rift_time.timestamp())}:F>")
+            upcoming.append(f"<t:{ts(rift_time)}:F>")
     if upcoming:
-        await interaction.response.send_message("📅 Rifts this week:\n" + "\n".join(upcoming), ephemeral=True)
+        await respond_safe(interaction, "📅 Rifts this week:\n" + "\n".join(upcoming), ephemeral=True)
     else:
-        await interaction.response.send_message("No Rifts scheduled for the next 7 days.", ephemeral=True)
+        await respond_safe(interaction, "No Rifts scheduled for the next 7 days.", ephemeral=True)
 
 @tree.command(name="lastrift", description="Show the last Rift from the schedule")
+@cooldown(1, 3, key=BucketType.user)
 async def lastrift(interaction: discord.Interaction):
-    rift_time = pytz.utc.localize(datetime.datetime.strptime(rifts[-1], "%Y-%m-%d %H:%M"))
-    await interaction.response.send_message(
-        f"📌 Last Rift in the schedule:\n<t:{int(rift_time.timestamp())}:F>", ephemeral=True)
+    rift_time = utc_parse(rifts[-1])
+    await respond_safe(interaction, f"📌 Last Rift in the schedule:\n<t:{ts(rift_time)}:F>", ephemeral=True)
 
 @tree.command(name="timeleft", description="Show time left until next Rift")
+@cooldown(1, 5, key=BucketType.user)
 async def timeleft(interaction: discord.Interaction):
     now = datetime.datetime.now(pytz.utc)
     for rift_time_str in rifts:
-        rift_time = pytz.utc.localize(datetime.datetime.strptime(rift_time_str, "%Y-%m-%d %H:%M"))
+        rift_time = utc_parse(rift_time_str)
         if rift_time > now:
             delta = rift_time - now
-            hours, remainder = divmod(int(delta.total_seconds()), 3600)
+            total = int(delta.total_seconds())
+            hours, remainder = divmod(total, 3600)
             minutes = remainder // 60
-            await interaction.response.send_message(
-                f"⏰ Time left until next Rift: **{hours}h {minutes}m**", ephemeral=True)
+            await respond_safe(interaction, f"⏰ Time left until next Rift: **{hours}h {minutes}m**", ephemeral=True)
             return
-    await interaction.response.send_message("No upcoming Rift found.", ephemeral=True)
+    await respond_safe(interaction, "No upcoming Rift found.", ephemeral=True)
 
 @tree.command(name="mytime", description="Show your local time and UTC")
+@cooldown(1, 5, key=BucketType.user)
 async def mytime(interaction: discord.Interaction):
     now = datetime.datetime.now()
     utc_now = datetime.datetime.utcnow()
-    await interaction.response.send_message(
-        f"🕓 Your local time: **{now.strftime('%H:%M')}**\n"
-        f"🌍 UTC time: **{utc_now.strftime('%H:%M')}**", ephemeral=True)
+    await respond_safe(
+        interaction,
+        f"🕓 Your local time: **{now.strftime('%H:%M')}**\n🌍 UTC time: **{utc_now.strftime('%H:%M')}**",
+        ephemeral=True
+    )
 
 @tree.command(name="help", description="Show all commands and bot details")
+@cooldown(1, 5, key=BucketType.user)
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🤖 Umbral Rift Bot — your silent Rift assistant",
@@ -209,13 +276,14 @@ async def help_command(interaction: discord.Interaction):
         color=0x5865F2
     )
     embed.set_footer(text="Let the Rift chaos begin 🔥")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await respond_safe(interaction, embed=embed, ephemeral=True)
 
 @tree.command(name="uploadics", description="Upload a .ics file to add new Rift events")
 @app_commands.checks.has_any_role(R5_ROLE_ID, R4_ROLE_ID)
+@cooldown(1, 10, key=BucketType.user)
 async def uploadics(interaction: discord.Interaction, attachment: discord.Attachment):
     if not attachment.filename.endswith(".ics"):
-        await interaction.response.send_message("Please upload a valid .ics file.", ephemeral=True)
+        await respond_safe(interaction, "Please upload a valid .ics file.", ephemeral=True)
         return
 
     content = await attachment.read()
@@ -237,12 +305,13 @@ async def uploadics(interaction: discord.Interaction, attachment: discord.Attach
             rifts = sorted(rifts_set)
             save_rifts()
 
-            await interaction.response.send_message(
+            await respond_safe(
+                interaction,
                 f"✅ Rift schedule updated. Added {len(rifts) - old_count} new events (now total {len(rifts)}).",
                 ephemeral=True
             )
 
-            channel = await client.fetch_channel(1398208622567227462)
+            channel = await get_text_channel(1398208622567227462)
             if channel:
                 update_message = (
                     f"📢 **Rift schedule updated!**\n"
@@ -250,29 +319,31 @@ async def uploadics(interaction: discord.Interaction, attachment: discord.Attach
                     f"Total events: **{len(rifts)}**\n"
                     f"Use `/weeklyrifts` or `/nextrift` to view the updated schedule."
                 )
-                await channel.send(f"<@&{R5_ROLE_ID}> <@&{R4_ROLE_ID}>\n{update_message}")
+                await send_safe_message(channel, f"<@&{R5_ROLE_ID}> <@&{R4_ROLE_ID}>\n{update_message}")
         else:
-            await interaction.response.send_message("No valid Rift dates found in the file.", ephemeral=True)
+            await respond_safe(interaction, "No valid Rift dates found in the file.", ephemeral=True)
     except Exception as e:
-        await interaction.response.send_message(f"❌ Failed to parse .ics file: {e}", ephemeral=True)
+        await respond_safe(interaction, f"❌ Failed to parse .ics file: {e}", ephemeral=True)
 
 @uploadics.error
 async def uploadics_error(interaction: discord.Interaction, error):
     if isinstance(error, app_commands.errors.MissingAnyRole):
-        await interaction.response.send_message("You don't have permission to use this command.", ephemeral=True)
+        await respond_safe(interaction, "You don't have permission to use this command.", ephemeral=True)
     else:
-        await interaction.response.send_message("An error occurred while processing the file.", ephemeral=True)
+        await respond_safe(interaction, "An error occurred while processing the file.", ephemeral=True)
 
 @tree.command(name="delay_next_rift", description="Shift the next Rift forward/backward by minutes")
 @app_commands.describe(minutes="Positive = delay, negative = earlier")
 @app_commands.checks.has_any_role(R5_ROLE_ID, R4_ROLE_ID)
+@cooldown(1, 10, key=BucketType.user)
 async def delay_next_rift(interaction: discord.Interaction, minutes: int):
     now = datetime.datetime.now(pytz.utc)
     for i, rift_time_str in enumerate(rifts):
-        rift_time = pytz.utc.localize(datetime.datetime.strptime(rift_time_str, "%Y-%m-%d %H:%M"))
+        rift_time = utc_parse(rift_time_str)
         if rift_time > now:
             old_rift_str = rift_time_str
-            
+
+            # cancel starych tasków
             if old_rift_str in scheduled_tasks:
                 for task in scheduled_tasks[old_rift_str]:
                     task.cancel()
@@ -283,6 +354,7 @@ async def delay_next_rift(interaction: discord.Interaction, minutes: int):
             rifts[i] = new_rift_str
             save_rifts()
 
+            # zaplanuj nowe przypomnienia
             tasks = []
             for delta in [3600, 1800, 900, 300]:
                 remind_time = new_time - datetime.timedelta(seconds=delta)
@@ -291,27 +363,22 @@ async def delay_next_rift(interaction: discord.Interaction, minutes: int):
                     tasks.append(t)
             scheduled_tasks[new_rift_str] = tasks
 
-            await interaction.response.send_message(
-                f"✅ Rift moved to <t:{int(new_time.timestamp())}:F> ({minutes:+} min)",
+            await respond_safe(
+                interaction,
+                f"✅ Rift moved to <t:{ts(new_time)}:F> ({minutes:+} min)",
                 ephemeral=False
             )
             return
 
-    await interaction.response.send_message("No upcoming Rift found.", ephemeral=True)
+    await respond_safe(interaction, "No upcoming Rift found.", ephemeral=True)
 
 @delay_next_rift.error
 async def delay_next_rift_error(interaction: discord.Interaction, error):
     if isinstance(error, app_commands.errors.MissingAnyRole):
-        await interaction.response.send_message("You don't have permission to use this command.", ephemeral=True)
+        await respond_safe(interaction, "You don't have permission to use this command.", ephemeral=True)
     else:
-        await interaction.response.send_message("An error occurred while trying to delay the Rift.", ephemeral=True)
+        await respond_safe(interaction, "An error occurred while trying to delay the Rift.", ephemeral=True)
 
-keep_alive()
-
-while True:
-    try:
-        client.run(TOKEN)
-    except Exception as e:
-        print(f"Bot crashed with error: {e}")
-        import time
-        time.sleep(5)
+# --- start ---
+keep_alive()      # lekki endpoint /health i /
+client.run(TOKEN) # BEZ while True – discord.py sam reconnectuje
