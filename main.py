@@ -191,7 +191,7 @@ async def on_ready():
 # --- komendy (z cooldownami i respond_safe) ---
 
 @tree.command(name="nextrift", description="Show the next Rift event")
-@cooldown(1, 3, key=app_commands.BucketType.user)
+@slash_cooldown(1, 3, key=app_commands.BucketType.user)
 async def nextrift(interaction: discord.Interaction):
     now = datetime.datetime.now(pytz.utc)
     for rift_time_str in rifts:
@@ -206,7 +206,7 @@ async def nextrift(interaction: discord.Interaction):
     await respond_safe(interaction, "No upcoming Rift found.", ephemeral=True)
 
 @tree.command(name="weeklyrifts", description="Show all Rifts in the next 7 days")
-@cooldown(1, 5, key=app_commands.BucketType.user)
+@slash_cooldown(1, 5, key=app_commands.BucketType.user)
 async def weeklyrifts(interaction: discord.Interaction):
     now = datetime.datetime.now(pytz.utc)
     one_week = now + datetime.timedelta(days=7)
@@ -221,13 +221,13 @@ async def weeklyrifts(interaction: discord.Interaction):
         await respond_safe(interaction, "No Rifts scheduled for the next 7 days.", ephemeral=True)
 
 @tree.command(name="lastrift", description="Show the last Rift from the schedule")
-@cooldown(1, 3, key=app_commands.BucketType.user)
+@slash_cooldown(1, 3, key=app_commands.BucketType.user)
 async def lastrift(interaction: discord.Interaction):
     rift_time = utc_parse(rifts[-1])
     await respond_safe(interaction, f"📌 Last Rift in the schedule:\n<t:{ts(rift_time)}:F>", ephemeral=True)
 
 @tree.command(name="timeleft", description="Show time left until next Rift")
-@cooldown(1, 5, key=app_commands.BucketType.user)
+@slash_cooldown(1, 5, key=app_commands.BucketType.user)
 async def timeleft(interaction: discord.Interaction):
     now = datetime.datetime.now(pytz.utc)
     for rift_time_str in rifts:
@@ -242,7 +242,7 @@ async def timeleft(interaction: discord.Interaction):
     await respond_safe(interaction, "No upcoming Rift found.", ephemeral=True)
 
 @tree.command(name="mytime", description="Show your local time and UTC")
-@cooldown(1, 5, key=app_commands.BucketType.user)
+@slash_cooldown(1, 5, key=app_commands.BucketType.user)
 async def mytime(interaction: discord.Interaction):
     now = datetime.datetime.now()
     utc_now = datetime.datetime.utcnow()
@@ -253,7 +253,7 @@ async def mytime(interaction: discord.Interaction):
     )
 
 @tree.command(name="help", description="Show all commands and bot details")
-@cooldown(1, 5, key=app_commands.BucketType.user)
+@slash_cooldown(1, 5, key=app_commands.BucketType.user)
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🤖 Umbral Rift Bot — your silent Rift assistant",
@@ -282,7 +282,7 @@ async def help_command(interaction: discord.Interaction):
 
 @tree.command(name="uploadics", description="Upload a .ics file to add new Rift events")
 @app_commands.checks.has_any_role(R5_ROLE_ID, R4_ROLE_ID)
-@cooldown(1, 10, key=app_commands.BucketType.user)
+@slash_cooldown(1, 10, key=app_commands.BucketType.user)
 async def uploadics(interaction: discord.Interaction, attachment: discord.Attachment):
     if not attachment.filename.endswith(".ics"):
         await respond_safe(interaction, "Please upload a valid .ics file.", ephemeral=True)
@@ -337,7 +337,7 @@ async def uploadics_error(interaction: discord.Interaction, error):
 @tree.command(name="delay_next_rift", description="Shift the next Rift forward/backward by minutes")
 @app_commands.describe(minutes="Positive = delay, negative = earlier")
 @app_commands.checks.has_any_role(R5_ROLE_ID, R4_ROLE_ID)
-@cooldown(1, 10, key=app_commands.BucketType.user)
+@slash_cooldown(1, 10, key=app_commands.BucketType.user)
 async def delay_next_rift(interaction: discord.Interaction, minutes: int):
     now = datetime.datetime.now(pytz.utc)
     for i, rift_time_str in enumerate(rifts):
