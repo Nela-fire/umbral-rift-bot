@@ -115,6 +115,7 @@ async def schedule_reminder(remind_time: datetime.datetime, rift_time: datetime.
             return
 
         motivational = [
+            # Original lines
             "🔥 Let's crush this Rift together!",
             "⚔️ Gear up, team – victory awaits!",
             "🚀 Push your limits. This is our moment!",
@@ -123,6 +124,56 @@ async def schedule_reminder(remind_time: datetime.datetime, rift_time: datetime.
             "🏆 Together we conquer – don't miss it!",
             "🛡️ This is what we trained for!",
             "🎯 Focus up! It's Rift time soon!",
+            
+            # New battle-ready lines
+            "💪 Time to show what we're made of!",
+            "⚡ Unleash your power – the Rift calls!",
+            "🗡️ Warriors assemble – glory beckons!",
+            "💫 Make every moment count. Let's dominate!",
+            "🔥 Bring the heat – it's go time!",
+            "⭐ Champions rise to the challenge!",
+            "🏹 Lock and load – victory is ours!",
+            "💢 Maximum effort, maximum rewards!",
+            
+            # Team spirit lines
+            "🤝 Stronger together – let's roll!",
+            "✊ United we stand, divided they fall!",
+            "🎖️ Squad up! Time to make history!",
+            "🤜🤛 One team, one dream – let's get it!",
+            "🫂 Rally the troops – we've got this!",
+            "👥 Together we're unstoppable!",
+            
+            # Pump-up lines
+            "🌪️ Storm the Rift – leave nothing behind!",
+            "🎮 Game face on – it's showtime!",
+            "⏰ The moment has arrived. Own it!",
+            "🔔 Answer the call – greatness awaits!",
+            "🚨 All hands on deck – let's move!",
+            "📢 Sound the alarm – Rift warriors needed!",
+            
+            # Achievement-focused lines
+            "🥇 First place has our name on it!",
+            "📈 Time to climb those leaderboards!",
+            "✨ Write your legend in the Rift!",
+            "🎪 The stage is set – steal the show!",
+            "🏅 Earn your stripes, claim your glory!",
+            "🎊 Make this Rift one to remember!",
+            
+            # Energy/hype lines
+            "🌋 Eruption imminent – get ready to explode!",
+            "⚔️ Sharpen your skills – battle approaches!",
+            "🎸 Let's rock this Rift!",
+            "🔋 Full power! Maximum destruction!",
+            "🌊 Ride the wave to victory!",
+            "☄️ Impact incoming – brace for greatness!",
+            
+            # Confidence boosters
+            "💯 You've got this – now prove it!",
+            "🦁 Roar into battle – show no mercy!",
+            "🏰 Defend our honor, seize the throne!",
+            "⚓ Hold the line – victory is certain!",
+            "🎖️ Heroes are made in moments like these!",
+            "🦅 Soar above the rest – claim your destiny!",
         ]
         templates = [
             (
